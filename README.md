@@ -5,6 +5,8 @@ Native Linux monitor UI for TURZX/Turing 3.5-inch USB smart screens.
 This avoids the vendor Windows app and talks to the display through the Linux
 CDC serial device, usually `/dev/ttyACM0`.
 
+![TURZX Native Monitor screenshot](docs/screenshot.png)
+
 ## Supported Device
 
 Tested with:
