@@ -13,7 +13,7 @@ desktop_dir="${data_home}/applications"
 interval="${INTERVAL:-1}"
 brightness="${BRIGHTNESS:-100}"
 device="${DEVICE:-AUTO}"
-rotate="${ROTATE:-180}"
+rotate="${ROTATE:-0}"
 
 args=(--interval "$interval" --brightness "$brightness" --device "$device")
 if [[ "$rotate" == "180" || "$rotate" == "true" || "$rotate" == "1" ]]; then

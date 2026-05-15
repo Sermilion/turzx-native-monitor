@@ -19,7 +19,7 @@ Tested with:
 ```bash
 git clone https://github.com/Sermilion/turzx-native-monitor.git
 cd turzx-native-monitor
-ROTATE=180 INTERVAL=1 ./install.sh
+INTERVAL=1 ./install.sh
 ```
 
 The installer creates:
@@ -66,20 +66,20 @@ journalctl --user -u turzx-native-monitor.service -f
 Set install-time environment variables:
 
 ```bash
-INTERVAL=1 BRIGHTNESS=90 ROTATE=180 DEVICE=AUTO ./install.sh
+INTERVAL=1 BRIGHTNESS=90 ROTATE=0 DEVICE=AUTO ./install.sh
 ```
 
 Available variables:
 
 - `INTERVAL`: refresh interval in seconds, default `1`
 - `BRIGHTNESS`: display brightness from `0` to `100`, default `100`
-- `ROTATE`: set to `180`, `true`, or `1` for upside-down mounting
+- `ROTATE`: set to `180`, `true`, or `1` for upside-down mounting; default `0`
 - `DEVICE`: serial device path, or `AUTO`, default `AUTO`
 
 You can also run directly:
 
 ```bash
-turzx-native-monitor --interval 1 --rotate-180
+turzx-native-monitor --interval 1
 ```
 
 Generate a preview image without touching the display:
