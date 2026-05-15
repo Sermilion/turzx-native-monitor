@@ -17,7 +17,7 @@ Tested with:
 ## Install
 
 ```bash
-git clone https://github.com/YOUR_USER/turzx-native-monitor.git
+git clone https://github.com/Sermilion/turzx-native-monitor.git
 cd turzx-native-monitor
 ROTATE=180 INTERVAL=1 ./install.sh
 ```
