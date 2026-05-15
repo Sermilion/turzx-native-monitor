@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "turzx-native-monitor"
+version = "0.1.0"
+description = "Native Linux monitor UI for TURZX/Turing 3.5-inch USB smart screens"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+authors = [
+  { name = "Braian Gapur", email = "scatmetal@gmail.com" }
+]
+dependencies = [
+  "pillow>=10",
+  "psutil>=5.9",
+  "pyserial>=3.5",
+  "smartscreen-driver>=0.2.3"
+]
+
+[project.scripts]
+turzx-native-monitor = "turzx_native_monitor.monitor:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
