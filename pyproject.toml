@@ -24,3 +24,14 @@ turzx-native-monitor = "turzx_native_monitor.monitor:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pylint.main]
+py-version = "3.10"
+source-roots = ["src"]
+
+[tool.pylint."messages control"]
+disable = [
+  "missing-function-docstring",
+  "too-many-arguments",
+  "too-many-positional-arguments"
+]

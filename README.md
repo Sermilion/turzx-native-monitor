@@ -33,6 +33,10 @@ The installer creates:
 
 ## Device Permissions
 
+`DEVICE=AUTO` uses the stable Turing by-id path when available. If it has to
+scan `/dev/ttyACM*`, it only accepts devices matching USB ID `1a86:5722` or the
+Turing UsbMonitor descriptors.
+
 If the service cannot open the display, check the serial device:
 
 ```bash
@@ -82,6 +86,12 @@ You can also run directly:
 
 ```bash
 turzx-native-monitor --interval 1
+```
+
+Print the device selected by auto-detection:
+
+```bash
+turzx-native-monitor --print-device
 ```
 
 Generate a preview image without touching the display:

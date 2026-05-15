@@ -1,3 +1,5 @@
+"""Render and publish a Linux monitor dashboard to a TURZX USB display."""
+
 from __future__ import annotations
 
 import argparse
@@ -18,6 +20,9 @@ from smartscreen_driver.lcd_comm_rev_a import LcdCommRevA
 WIDTH = 320
 HEIGHT = 480
 DEFAULT_DEVICE_BY_ID = "/dev/serial/by-id/usb-Turing_UsbMonitor_USB35INCHIPSV2-if00"
+TURZX_USB_VENDOR_ID = "1a86"
+TURZX_USB_PRODUCT_ID = "5722"
+TURZX_DESCRIPTOR_MARKERS = ("usbmonitor", "usb35inchip")
 FONT_CANDIDATES_REGULAR = (
     "/usr/share/fonts/noto/NotoSans-Regular.ttf",
     "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
@@ -48,10 +53,10 @@ DYNAMIC_REGIONS = (
 )
 
 
-def read_text(path: str) -> str | None:
+def read_text(path: str | Path) -> str | None:
     try:
-        return Path(path).read_text().strip()
-    except Exception:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
         return None
 
 
@@ -90,14 +95,98 @@ def draw_right(
     draw.text((right - text_width(draw, text, font), y), text, fill=fill, font=font)
 
 
+def tty_usb_metadata(device: str) -> dict[str, str]:
+    sysfs_device = Path("/sys/class/tty") / Path(device).name / "device"
+    try:
+        current = sysfs_device.resolve(strict=True)
+    except OSError:
+        return {}
+
+    for path in (current, *current.parents):
+        vendor_id = read_text(path / "idVendor")
+        product_id = read_text(path / "idProduct")
+        if vendor_id or product_id:
+            return {
+                "idVendor": vendor_id or "",
+                "idProduct": product_id or "",
+                "manufacturer": read_text(path / "manufacturer") or "",
+                "product": read_text(path / "product") or "",
+                "serial": read_text(path / "serial") or "",
+            }
+    return {}
+
+
+def is_turzx_display(device: str) -> bool:
+    metadata = tty_usb_metadata(device)
+    vendor_id = metadata.get("idVendor", "").lower()
+    product_id = metadata.get("idProduct", "").lower()
+    if vendor_id == TURZX_USB_VENDOR_ID and product_id == TURZX_USB_PRODUCT_ID:
+        return True
+
+    descriptors = " ".join(
+        metadata.get(field, "") for field in ("manufacturer", "product", "serial")
+    ).lower()
+    return any(marker in descriptors for marker in TURZX_DESCRIPTOR_MARKERS)
+
+
+def describe_serial_candidate(device: str) -> str:
+    metadata = tty_usb_metadata(device)
+    vendor_id = metadata.get("idVendor") or "unknown"
+    product_id = metadata.get("idProduct") or "unknown"
+    descriptors = " ".join(
+        value
+        for value in (
+            metadata.get("manufacturer"),
+            metadata.get("product"),
+            metadata.get("serial"),
+        )
+        if value
+    )
+    suffix = f" {descriptors}" if descriptors else ""
+    return f"{device} ({vendor_id}:{product_id}{suffix})"
+
+
 def resolve_device(device: str) -> str:
     if device != "AUTO":
-        return os.path.realpath(device)
+        resolved = os.path.realpath(os.path.expanduser(device))
+        if not os.path.exists(resolved):
+            raise RuntimeError(f"Configured display device does not exist: {device}")
+        return resolved
+
     if os.path.exists(DEFAULT_DEVICE_BY_ID):
         return os.path.realpath(DEFAULT_DEVICE_BY_ID)
-    for candidate in sorted(glob.glob("/dev/ttyACM*")):
-        return candidate
+
+    serial_devices = sorted(glob.glob("/dev/ttyACM*"))
+    matches = [device for device in serial_devices if is_turzx_display(device)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        options = ", ".join(matches)
+        raise RuntimeError(
+            f"Multiple TURZX displays found ({options}); set --device explicitly."
+        )
+    if serial_devices:
+        options = ", ".join(
+            describe_serial_candidate(candidate) for candidate in serial_devices
+        )
+        raise RuntimeError(
+            "Found serial devices, but none match TURZX USB ID "
+            f"{TURZX_USB_VENDOR_ID}:{TURZX_USB_PRODUCT_ID}; set --device explicitly. "
+            f"Candidates: {options}"
+        )
     raise RuntimeError("TURZX display was not found at /dev/ttyACM*")
+
+
+def print_detected_device(device: str) -> int:
+    print(resolve_device(device))
+    return 0
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    if not 0 <= args.brightness <= 100:
+        raise RuntimeError("--brightness must be between 0 and 100")
+    if args.interval <= 0:
+        raise RuntimeError("--interval must be greater than 0")
 
 
 def find_hwmon_by_name(name: str) -> Path | None:
@@ -168,7 +257,7 @@ def load_font(paths: tuple[str, ...], size: int) -> ImageFont.FreeTypeFont | Ima
     if path:
         try:
             return ImageFont.truetype(path, size)
-        except Exception:
+        except OSError:
             pass
     return ImageFont.load_default()
 
@@ -189,7 +278,13 @@ def draw_bar(
     pct: float | None,
     color: tuple[int, int, int],
 ) -> None:
-    draw.rounded_rectangle((x, y, x + w, y + h), radius=5, fill=(31, 37, 46), outline=(61, 70, 84), width=1)
+    draw.rounded_rectangle(
+        (x, y, x + w, y + h),
+        radius=5,
+        fill=(31, 37, 46),
+        outline=(61, 70, 84),
+        width=1,
+    )
     if pct is not None:
         fill_w = max(4, min(w, int(w * pct / 100.0)))
         draw.rounded_rectangle((x, y, x + fill_w, y + h), radius=5, fill=color)
@@ -226,16 +321,36 @@ def render_frame() -> Image.Image:
         shade = int(24 + 18 * y / HEIGHT)
         draw.line((0, y, WIDTH, y), fill=(8, shade, 30))
 
-    draw.rounded_rectangle((12, 12, 308, 468), radius=10, outline=(74, 92, 112), width=2)
+    draw.rounded_rectangle(
+        (12, 12, 308, 468), radius=10, outline=(74, 92, 112), width=2
+    )
     draw.text((22, 24), "Linux Monitor", fill=(255, 255, 255), font=FONT_TITLE)
     draw.text((22, 56), socket.gethostname(), fill=(145, 204, 255), font=FONT_SMALL)
     draw_right(draw, 296, 48, time.strftime("%H:%M"), FONT_BIG, (255, 255, 255))
 
-    draw_metric(draw, 104, "CPU", f"{cpu:.0f}%  {fmt_temp(cpu_temp)}", cpu, (73, 177, 255))
-    draw_metric(draw, 165, "RAM", f"{mem.percent:.0f}%  {mem.used / 2**30:.1f}G", mem.percent, (109, 223, 139))
-    draw_metric(draw, 226, "GPU", f"{fmt_pct(gpu_busy)}  {fmt_temp(gpu_temp)}", gpu_busy, (255, 182, 80))
+    draw_metric(
+        draw, 104, "CPU", f"{cpu:.0f}%  {fmt_temp(cpu_temp)}", cpu, (73, 177, 255)
+    )
+    draw_metric(
+        draw,
+        165,
+        "RAM",
+        f"{mem.percent:.0f}%  {mem.used / 2**30:.1f}G",
+        mem.percent,
+        (109, 223, 139),
+    )
+    draw_metric(
+        draw,
+        226,
+        "GPU",
+        f"{fmt_pct(gpu_busy)}  {fmt_temp(gpu_temp)}",
+        gpu_busy,
+        (255, 182, 80),
+    )
     draw_metric(draw, 287, "VRAM", fmt_pct(vram_pct), vram_pct, (214, 138, 255))
-    draw_metric(draw, 348, "Disk", f"{disk.percent:.0f}%  /", disk.percent, (255, 111, 133))
+    draw_metric(
+        draw, 348, "Disk", f"{disk.percent:.0f}%  /", disk.percent, (255, 111, 133)
+    )
 
     draw.line((22, 422, 298, 422), fill=(74, 92, 112), width=1)
     draw.text((24, 436), f"load {load1:.2f}", fill=(210, 218, 226), font=FONT_SMALL)
@@ -282,18 +397,45 @@ def run_monitor(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Native Linux monitor for TURZX/Turing 3.5-inch USB displays.")
-    parser.add_argument("--interval", type=float, default=1.0, help="Refresh interval in seconds.")
-    parser.add_argument("--brightness", type=int, default=100, help="Display brightness from 0 to 100.")
-    parser.add_argument("--device", default="AUTO", help="Serial device path, or AUTO to detect the TURZX screen.")
-    parser.add_argument("--rotate-180", action="store_true", help="Rotate the UI for an upside-down mounted display.")
-    parser.add_argument("--preview", metavar="PATH", help="Render one frame to an image file instead of using the display.")
+    parser = argparse.ArgumentParser(
+        description="Native Linux monitor for TURZX/Turing 3.5-inch USB displays."
+    )
+    parser.add_argument(
+        "--interval", type=float, default=1.0, help="Refresh interval in seconds."
+    )
+    parser.add_argument(
+        "--brightness", type=int, default=100, help="Display brightness from 0 to 100."
+    )
+    parser.add_argument(
+        "--device",
+        default="AUTO",
+        help="Serial device path, or AUTO to detect the TURZX screen.",
+    )
+    parser.add_argument(
+        "--rotate-180",
+        action="store_true",
+        help="Rotate the UI for an upside-down mounted display.",
+    )
+    parser.add_argument(
+        "--preview",
+        metavar="PATH",
+        help="Render one frame to an image file instead of using the display.",
+    )
+    parser.add_argument(
+        "--print-device",
+        action="store_true",
+        help="Print the detected display device and exit.",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    validate_args(args)
+
+    if args.print_device:
+        return print_detected_device(args.device)
 
     if args.preview:
         render_frame().save(args.preview)

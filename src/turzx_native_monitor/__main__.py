@@ -1,3 +1,5 @@
+"""Command-line entry point for TURZX Native Monitor."""
+
 from .monitor import main
 
 
