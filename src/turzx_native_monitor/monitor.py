@@ -9,6 +9,7 @@ import signal
 import socket
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import psutil
@@ -35,7 +36,10 @@ FONT_CANDIDATES_BOLD = (
     "/usr/share/fonts/noto/NotoSans-Bold.ttf",
     "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
 )
-DYNAMIC_REGIONS = (
+FAN_EXCLUDED_CHIPS = ("amdgpu",)
+DEFAULT_MAX_RPM = 3000.0
+THEMES = ("default", "cyberpunk")
+DEFAULT_DYNAMIC_REGIONS = (
     (198, 44, 300, 86),
     (176, 98, 300, 126),
     (22, 132, 298, 147),
@@ -187,6 +191,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise RuntimeError("--brightness must be between 0 and 100")
     if args.interval <= 0:
         raise RuntimeError("--interval must be greater than 0")
+    if args.pump_max_rpm <= 0 or args.fan_max_rpm <= 0:
+        raise RuntimeError("--pump-max-rpm and --fan-max-rpm must be greater than 0")
 
 
 def find_hwmon_by_name(name: str) -> Path | None:
@@ -244,12 +250,93 @@ def gpu_stats() -> tuple[float | None, float | None, float | None]:
     return busy, vram_pct, (temp / 1000.0 if temp is not None else None)
 
 
+@dataclass(frozen=True)
+class FanSensors:
+    """Fan inputs and full-scale RPM values shown by the cyberpunk theme."""
+
+    pump: Path | None = None
+    fan: Path | None = None
+    pump_max_rpm: float = DEFAULT_MAX_RPM
+    fan_max_rpm: float = DEFAULT_MAX_RPM
+
+
+def fan_index(path: Path) -> int:
+    digits = "".join(ch for ch in path.name if ch.isdigit())
+    return int(digits) if digits else 0
+
+
+def hwmon_fans() -> dict[str, Path]:
+    fans: dict[str, Path] = {}
+    for hwmon in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
+        chip = read_text(hwmon / "name") or hwmon.name
+        if chip in FAN_EXCLUDED_CHIPS:
+            continue
+        for fan_input in sorted(hwmon.glob("fan[0-9]*_input"), key=fan_index):
+            fans[f"{chip}/{fan_input.name.removesuffix('_input')}"] = fan_input
+    return fans
+
+
+def resolve_fan(spec: str, fans: dict[str, Path], exclude: Path | None = None) -> Path | None:
+    if spec.upper() == "NONE":
+        return None
+    if spec.upper() == "AUTO":
+        speeds = [
+            (read_number(str(path)) or 0.0, path)
+            for path in fans.values()
+            if path != exclude
+        ]
+        spinning = [item for item in speeds if item[0] > 0]
+        return max(spinning, key=lambda item: item[0])[1] if spinning else None
+
+    matches = [
+        path for name, path in fans.items() if name == spec or name.endswith(f"/{spec}")
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    available = ", ".join(fans) or "none"
+    if matches:
+        raise RuntimeError(
+            f"Fan '{spec}' matches several chips; use chip/fanN. Available: {available}"
+        )
+    raise RuntimeError(f"Fan '{spec}' was not found. Available: {available}")
+
+
+def resolve_fan_sensors(args: argparse.Namespace) -> FanSensors:
+    fans = hwmon_fans()
+    pump = resolve_fan(args.pump_fan, fans)
+    fan = resolve_fan(args.fan, fans, exclude=pump)
+    return FanSensors(pump, fan, args.pump_max_rpm, args.fan_max_rpm)
+
+
+def print_fans() -> int:
+    fans = hwmon_fans()
+    if not fans:
+        print("No fan sensors found under /sys/class/hwmon")
+        return 1
+    for name, path in fans.items():
+        rpm = read_number(str(path))
+        print(f"{name}: {'--' if rpm is None else f'{rpm:.0f}'} RPM")
+    return 0
+
+
+def fan_rpm(path: Path | None) -> float | None:
+    return read_number(str(path)) if path else None
+
+
+def rpm_pct(rpm: float | None, max_rpm: float) -> float | None:
+    return None if rpm is None else min(100.0, rpm / max_rpm * 100.0)
+
+
 def fmt_temp(value: float | None) -> str:
     return "--C" if value is None else f"{value:.0f}C"
 
 
 def fmt_pct(value: float | None) -> str:
     return "--%" if value is None else f"{value:.0f}%"
+
+
+def fmt_rpm(value: float | None) -> str:
+    return "-- RPM" if value is None else f"{value:.0f} RPM"
 
 
 def load_font(paths: tuple[str, ...], size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -267,6 +354,27 @@ FONT_LABEL = load_font(FONT_CANDIDATES_BOLD, 17)
 FONT_VALUE = load_font(FONT_CANDIDATES_REGULAR, 18)
 FONT_SMALL = load_font(FONT_CANDIDATES_REGULAR, 14)
 FONT_BIG = load_font(FONT_CANDIDATES_BOLD, 30)
+FONT_CP_LABEL = load_font(FONT_CANDIDATES_BOLD, 15)
+FONT_CP_VALUE = load_font(FONT_CANDIDATES_REGULAR, 16)
+
+CP_BG = (6, 6, 12)
+CP_SCANLINE = (14, 14, 24)
+CP_YELLOW = (252, 238, 10)
+CP_CYAN = (0, 240, 255)
+CP_RED = (255, 0, 60)
+CP_TEXT = (226, 226, 214)
+CP_SEGMENT_OFF = (38, 36, 14)
+CP_ROW_Y = tuple(100 + 44 * index for index in range(7))
+CP_DYNAMIC_REGIONS = (
+    (198, 44, 300, 86),
+    *(
+        region
+        for y in CP_ROW_Y
+        for region in ((140, y - 2, 300, y + 20), (22, y + 21, 299, y + 33))
+    ),
+    (22, 434, 102, 456),
+    (140, 434, 228, 456),
+)
 
 
 def draw_bar(
@@ -303,7 +411,7 @@ def draw_metric(
     draw_bar(draw, 22, y + 28, 276, 14, pct, color)
 
 
-def render_frame() -> Image.Image:
+def render_default(_fans: FanSensors) -> Image.Image:
     cpu = psutil.cpu_percent(interval=None)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
@@ -359,7 +467,97 @@ def render_frame() -> Image.Image:
     return img
 
 
-def run_monitor(args: argparse.Namespace) -> int:
+def draw_segment_bar(
+    draw: ImageDraw.ImageDraw,
+    y: int,
+    pct: float | None,
+    color: tuple[int, int, int],
+) -> None:
+    segment_w, gap = 4, 2
+    segments = 276 // (segment_w + gap)
+    lit = 0 if pct is None else round(segments * max(0.0, min(pct, 100.0)) / 100.0)
+    for index in range(segments):
+        x = 22 + index * (segment_w + gap)
+        fill = color if index < lit else CP_SEGMENT_OFF
+        draw.rectangle((x, y, x + segment_w - 1, y + 10), fill=fill)
+
+
+def draw_cp_row(
+    draw: ImageDraw.ImageDraw,
+    y: int,
+    label: str,
+    value: str,
+    pct: float | None,
+    color: tuple[int, int, int],
+    alert_at: float = 90.0,
+) -> None:
+    alert = pct is not None and pct >= alert_at
+    draw.text((22, y), label, fill=CP_YELLOW, font=FONT_CP_LABEL)
+    draw_right(draw, 296, y - 1, value, FONT_CP_VALUE, CP_RED if alert else CP_TEXT)
+    draw_segment_bar(draw, y + 21, pct, CP_RED if alert else color)
+
+
+def render_cyberpunk(fans: FanSensors) -> Image.Image:
+    cpu = psutil.cpu_percent(interval=None)
+    mem = psutil.virtual_memory()
+    cpu_temp = cpu_temp_c()
+    gpu_busy, vram_pct, gpu_temp = gpu_stats()
+    pump_rpm = fan_rpm(fans.pump)
+    case_rpm = fan_rpm(fans.fan)
+
+    img = Image.new("RGB", (WIDTH, HEIGHT), CP_BG)
+    draw = ImageDraw.Draw(img)
+    for y in range(0, HEIGHT, 3):
+        draw.line((0, y, WIDTH, y), fill=CP_SCANLINE)
+
+    draw.polygon(
+        ((12, 12), (284, 12), (308, 36), (308, 468), (36, 468), (12, 444)),
+        outline=CP_YELLOW,
+        width=2,
+    )
+    draw.polygon(((12, 12), (196, 12), (180, 40), (12, 40)), fill=CP_YELLOW)
+    draw.text((22, 16), "SYS//MONITOR", fill=CP_BG, font=FONT_LABEL)
+    draw.text((22, 56), socket.gethostname().upper(), fill=CP_CYAN, font=FONT_SMALL)
+    draw_right(draw, 296, 48, time.strftime("%H:%M"), FONT_BIG, CP_CYAN)
+    draw.line((22, 88, 298, 88), fill=CP_RED, width=1)
+    draw.rectangle((22, 86, 70, 90), fill=CP_RED)
+
+    rows = (
+        ("CPU", f"{cpu:.0f}%", cpu, CP_CYAN, 90.0),
+        ("CPU TEMP", fmt_temp(cpu_temp), cpu_temp, CP_YELLOW, 80.0),
+        ("RAM", f"{mem.percent:.0f}%  {mem.used / 2**30:.1f}G", mem.percent, CP_CYAN, 90.0),
+        ("GPU", f"{fmt_pct(gpu_busy)}  {fmt_temp(gpu_temp)}", gpu_busy, CP_CYAN, 90.0),
+        ("VRAM", fmt_pct(vram_pct), vram_pct, CP_CYAN, 90.0),
+        ("PUMP", fmt_rpm(pump_rpm), rpm_pct(pump_rpm, fans.pump_max_rpm), CP_YELLOW, 101.0),
+        ("FAN", fmt_rpm(case_rpm), rpm_pct(case_rpm, fans.fan_max_rpm), CP_YELLOW, 101.0),
+    )
+    for y, row in zip(CP_ROW_Y, rows):
+        draw_cp_row(draw, y, *row)
+
+    draw_cp_footer(draw)
+    return img
+
+
+def draw_cp_footer(draw: ImageDraw.ImageDraw) -> None:
+    load1, _, _ = os.getloadavg()
+    uptime = int(time.time() - psutil.boot_time())
+    draw.line((22, 422, 298, 422), fill=CP_YELLOW, width=1)
+    draw.text((24, 436), f"load {load1:.2f}", fill=CP_CYAN, font=FONT_SMALL)
+    draw.text(
+        (142, 436), f"up {uptime // 3600}h {uptime % 3600 // 60}m", fill=CP_CYAN, font=FONT_SMALL
+    )
+    draw.text((244, 436), "2077", fill=CP_RED, font=FONT_SMALL)
+
+
+RENDERERS = {"default": render_default, "cyberpunk": render_cyberpunk}
+DYNAMIC_REGIONS = {"default": DEFAULT_DYNAMIC_REGIONS, "cyberpunk": CP_DYNAMIC_REGIONS}
+
+
+def render_frame(theme: str, fans: FanSensors) -> Image.Image:
+    return RENDERERS[theme](fans)
+
+
+def run_monitor(args: argparse.Namespace, fans: FanSensors) -> int:
     running = True
 
     def stop(_signum, _frame):
@@ -382,12 +580,12 @@ def run_monitor(args: argparse.Namespace) -> int:
 
     while running:
         start = time.monotonic()
-        frame = render_frame()
+        frame = render_frame(args.theme, fans)
         if not painted:
             lcd.paint(frame)
             painted = True
         else:
-            for region in DYNAMIC_REGIONS:
+            for region in DYNAMIC_REGIONS[args.theme]:
                 lcd.paint(frame.crop(region), pos=(region[0], region[1]))
         elapsed = time.monotonic() - start
         time.sleep(max(0.1, args.interval - elapsed))
@@ -417,6 +615,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rotate the UI for an upside-down mounted display.",
     )
     parser.add_argument(
+        "--theme", choices=THEMES, default="default", help="Dashboard layout."
+    )
+    parser.add_argument(
+        "--pump-fan",
+        default="AUTO",
+        help="Pump fan sensor such as fan6 or it8689/fan6, AUTO for the fastest fan, or NONE.",
+    )
+    parser.add_argument(
+        "--fan",
+        default="AUTO",
+        help="Case fan sensor such as fan2, AUTO for the fastest non-pump fan, or NONE.",
+    )
+    parser.add_argument(
+        "--pump-max-rpm",
+        type=float,
+        default=DEFAULT_MAX_RPM,
+        help="RPM shown as a full pump bar.",
+    )
+    parser.add_argument(
+        "--fan-max-rpm",
+        type=float,
+        default=DEFAULT_MAX_RPM,
+        help="RPM shown as a full fan bar.",
+    )
+    parser.add_argument(
+        "--list-fans",
+        action="store_true",
+        help="Print detected fan sensors with their current RPM and exit.",
+    )
+    parser.add_argument(
         "--preview",
         metavar="PATH",
         help="Render one frame to an image file instead of using the display.",
@@ -437,12 +665,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_device:
         return print_detected_device(args.device)
 
+    if args.list_fans:
+        return print_fans()
+
+    fans = resolve_fan_sensors(args)
     if args.preview:
-        render_frame().save(args.preview)
+        render_frame(args.theme, fans).save(args.preview)
         return 0
 
     try:
-        return run_monitor(args)
+        return run_monitor(args, fans)
     except Exception as exc:
         print(f"turzx-native-monitor: {exc}", file=sys.stderr)
         raise

@@ -72,7 +72,7 @@ journalctl --user -u turzx-native-monitor.service -f
 Set install-time environment variables:
 
 ```bash
-INTERVAL=1 BRIGHTNESS=90 ROTATE=0 DEVICE=AUTO ./install.sh
+INTERVAL=1 BRIGHTNESS=90 ROTATE=0 DEVICE=AUTO THEME=cyberpunk PUMP_FAN=fan6 FAN=fan2 ./install.sh
 ```
 
 Available variables:
@@ -81,6 +81,26 @@ Available variables:
 - `BRIGHTNESS`: display brightness from `0` to `100`, default `100`
 - `ROTATE`: set to `180`, `true`, or `1` for upside-down mounting; default `0`
 - `DEVICE`: serial device path, or `AUTO`, default `AUTO`
+- `THEME`: `default` or `cyberpunk`, default `default`
+- `PUMP_FAN`: pump fan sensor for the cyberpunk theme, such as `fan6` or
+  `it8689/fan6`, `AUTO` for the fastest fan, or `NONE`; default `AUTO`
+- `FAN`: case fan sensor for the cyberpunk theme, `AUTO` for the fastest
+  non-pump fan, or `NONE`; default `AUTO`
+
+## Cyberpunk Theme
+
+`--theme cyberpunk` swaps the disk row for CPU temperature, pump RPM and fan
+RPM. Fan readings come from `/sys/class/hwmon`. GPU fans (`amdgpu`) are skipped.
+
+List the fan sensors and their current speed to find which header the pump
+uses:
+
+```bash
+turzx-native-monitor --list-fans
+```
+
+`--pump-max-rpm` and `--fan-max-rpm` set the RPM that fills a bar, default
+`3000`.
 
 You can also run directly:
 

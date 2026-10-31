@@ -14,9 +14,13 @@ interval="${INTERVAL:-1}"
 brightness="${BRIGHTNESS:-100}"
 device="${DEVICE:-AUTO}"
 rotate="${ROTATE:-0}"
+theme="${THEME:-default}"
+pump_fan="${PUMP_FAN:-AUTO}"
+fan="${FAN:-AUTO}"
 dry_run="${TURZX_INSTALL_DRY_RUN:-0}"
 
-args=(--interval "$interval" --brightness "$brightness" --device "$device")
+args=(--interval "$interval" --brightness "$brightness" --device "$device" --theme "$theme")
+args+=(--pump-fan "$pump_fan" --fan "$fan")
 if [[ "$rotate" == "180" || "$rotate" == "true" || "$rotate" == "1" ]]; then
   args+=(--rotate-180)
 fi
